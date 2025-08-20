@@ -1,54 +1,59 @@
 // implementation of aho corasick
 
+#define _CRT_SECURE_NO_WARNINGS
+
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
-#define AHO_ALPHABET 256 // support only characters from 0 to 255 (including)
+
+#define AHO_ALPHABET 1000 // support only characters from 0 to 255 (including)
+
+// Pointer to a node of an aho-corasick tree or -1 that can be considered like
+// NULL.  Here "pointer" is an index in the aho_heap
+typedef int Aho_Node_Ptr;
+
+// each node of aho corasick tree can be represented be any string.  To be
+// simpler I will be consider string and node as the same.
 
 typedef struct {
-  // amount of words for which this node is the lasted symbol
-  int cnt;
+  // amount of templates in aho-corasick tree that's equal to node's string.
+  // these nodes are called terminal, so i named variable `term`
+  int term;
 
-  // pointers to children or -1 what's mean that on this character edge isn't
-  // exist.
-  //
-  // here pointer is an index in the aho_heap (TODO: use vector instead?)
-  //
-  // after aho_build, they will automata movements
-  int to[AHO_ALPHABET];
-
-  int link;
+  // after `aho_build`, they will be finite-state machine transitions, before
+  // to[c] is pointer to children in default trie
+  Aho_Node_Ptr to[AHO_ALPHABET];
+  Aho_Node_Ptr link;
 
   // check the string of node, count all substrings that are input templates
-  //
-  // must be -1 if have not counted yet
-  int contain_terms;
+  int inside_term; // must be -1 if it have not computed yet
 } Aho;
 
 // maximum amount of aho-corasick nodes, it's must be equal to about the size of
 // all patterns
 #define AHO_HEAP_SZ 4096
-Aho aho_heap[AHO_HEAP_SZ];
+Aho aho_heap[AHO_HEAP_SZ]; // TODO: use vector instead?
 static int aho_heap_top = 0;
 
-// work with indexes in aho_heap like it pointer
-int aho_count(int x) { return aho_heap[x].cnt; }
-int aho_link(int x) { return aho_heap[x].link; }
-int aho_go(int x, size_t c) { return aho_heap[x].to[c]; }
+// work with indexes in aho_heap like it pointer (type Aho_Node_Ptr)
 
-// return "pointer" to new aho-corasick node
-int aho_make() {
-  int j = aho_heap_top;
-  aho_heap[j].contain_terms = aho_heap[j].link = -1;
-  aho_heap[j].cnt = 0;
+int aho_term(Aho_Node_Ptr x) { return aho_heap[x].term; }
+Aho_Node_Ptr aho_link(Aho_Node_Ptr x) { return aho_heap[x].link; }
+Aho_Node_Ptr aho_go(Aho_Node_Ptr x, size_t c) { return aho_heap[x].to[c]; }
+
+// return "pointer" to the new aho-corasick node
+Aho_Node_Ptr aho_make() {
+  Aho_Node_Ptr j = aho_heap_top;
+  ++aho_heap_top;
+  aho_heap[j].inside_term = aho_heap[j].link = -1;
+  aho_heap[j].term = 0;
   for (int i = 0; i < AHO_ALPHABET; i++) {
     aho_heap[j].to[i] = -1;
   }
-  ++aho_heap_top;
   return j;
 }
 
-void aho_add(int x, const char *word) {
+void aho_add(Aho_Node_Ptr x, const char *word) {
   for (int i = 0; word[i]; i++) {
     char c = word[i];
     if (aho_go(x, c) == -1) {
@@ -56,7 +61,7 @@ void aho_add(int x, const char *word) {
     }
     x = aho_go(x, c);
   }
-  ++aho_heap[x].cnt;
+  ++aho_heap[x].term;
 }
 
 // bfs build
@@ -64,7 +69,7 @@ void aho_add(int x, const char *word) {
 typedef struct {
   size_t count;
   size_t capacity;
-  int *items;
+  Aho_Node_Ptr *items;
   int l, r;
 } Aho_Queue;
 
@@ -73,7 +78,7 @@ void aho_queue_reserve(Aho_Queue *q, size_t sz) {
   q->capacity = sz;
 }
 
-int aho_queue_pop(Aho_Queue *q) {
+Aho_Node_Ptr aho_queue_pop(Aho_Queue *q) {
   assert(q->count && "pop empty queue");
   int res = q->items[q->l];
   ++q->l;
@@ -81,12 +86,12 @@ int aho_queue_pop(Aho_Queue *q) {
   return res;
 }
 
-int aho_queue_front(Aho_Queue q) {
-  assert(q.count && "pop empty queue");
-  return q.items[q.l];
-}
+#define AHO_QUEUE_DEFAULT_CAPACITY 2
 
-void aho_queue_push(Aho_Queue *q, int x) {
+void aho_queue_push(Aho_Queue *q, Aho_Node_Ptr x) {
+  if (q->capacity == 0) {
+    aho_queue_reserve(q, AHO_QUEUE_DEFAULT_CAPACITY);
+  }
   if ((size_t)q->r >= q->capacity) {
     aho_queue_reserve(q, q->capacity * 2 + 1);
   }
@@ -94,8 +99,8 @@ void aho_queue_push(Aho_Queue *q, int x) {
   q->count++;
 }
 
-void aho_build(int root) {
-  // automata actions:
+void aho_build(Aho_Node_Ptr root) {
+  // transitions:
   // go(t, c) = go(link(t), c)
   // link(y) = go(link(x), c)
 
@@ -104,9 +109,9 @@ void aho_build(int root) {
   aho_heap[root].link = root;
 
   while (q.count > 0) {
-    int x = aho_queue_pop(&q);
+    Aho_Node_Ptr x = aho_queue_pop(&q);
     for (size_t i = 0; i < AHO_ALPHABET; i++) {
-      int y = aho_go(x, i);
+      Aho_Node_Ptr y = aho_go(x, i);
       if (y == -1) { // go(x, c)
         aho_heap[x].to[i] = x == root ? root : aho_go(aho_link(x), i);
       } else { // link(y)
@@ -117,60 +122,16 @@ void aho_build(int root) {
   }
 }
 
-// print
+// aho_count()
 
-int top = 0;
-char buf[256];
-
-void aho_print(int x) {
-  printf("%d, %s\n", x, buf);
-  for (size_t c = 0; c < AHO_ALPHABET; c++) {
-    if (aho_go(x, c) == -1) {
-      continue;
-    }
-    buf[top++] = c;
-    aho_print(aho_go(x, c));
-    --top;
-  }
-}
-
-// aho_count_inside()
-
-int aho_count_inside(int t, int x) {
-  int ans = aho_heap[x].contain_terms;
+int aho_count(Aho_Node_Ptr t, Aho_Node_Ptr x) {
+  int ans = aho_heap[x].inside_term;
   if (ans != -1) {
     return ans;
   }
   if (x == t) {
     return 0;
   }
-  ans = aho_count(x) + aho_count(aho_link(x));
-  aho_heap[x].contain_terms = ans;
-  return ans;
-}
-
-int main(int argc, const char *argv[]) {
-  // argv[1] - text
-  // argv[2], argv[3], ... - templates
-  //
-  // display amount of occurances of templates inside text
-
-  assert(argc > 1);
-
-  int t = aho_make();
-
-  for (int i = 2; i < argc; i++) {
-    aho_add(t, argv[i]);
-  }
-
-  aho_build(t);
-
-  const char *txt = argv[1];
-  int ans = 0;
-  int cur = t;
-  for (size_t i = 0; txt[i]; i++) {
-    cur = aho_go(cur, txt[i]);
-    ans += aho_count_inside(t, cur);
-  }
-  printf("count %d occurances of given %d templates", ans, argc - 2);
+  aho_heap[x].inside_term = aho_term(x) + aho_term(aho_link(x));
+  return aho_heap[x].inside_term;
 }
