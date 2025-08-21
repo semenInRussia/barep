@@ -18,8 +18,27 @@ typedef struct Aho {
   // these nodes are called terminal nodes, so i named the variable `term`
   int term;
 
-  // check the string of node, count all substrings that are input templates
+  // check the string of node, count all substrings that are inside "dict"
+  //
+  // you can use aho_count to get this value by pointer
+  //
+  // if you are iterating through text char by char, going from state to state
+  // with `aho_go(t, c)`, then you can sum all states `aho_count` and get the
+  // amount of occurances of "dict"'s words
   int inside_term;
+
+  // if match_size=0, then current state don't contain "dict"'s words, otherwise
+  // match_size indicates the size of the longest match at the current state.
+  //
+  // you can use aho_match_size to get this value by pointer
+  //
+  // if you are iterating through text char by char, going from state to state
+  // with `aho_go(t, c)`, you can get match size and check the found string
+  // because you know the end and the beginning (end-string size)
+  int match_size;
+
+  // the length of node's string
+  int size;
 
   // after `aho_build`, they will be finite-state machine transitions, before
   // to[c] is pointer to children in default trie
@@ -35,9 +54,13 @@ static int aho_heap_top = 0;
 
 // work with indexes in aho_heap like it pointer (type Aho_Node_Ptr)
 
-int aho_term(Aho_Node_Ptr x) { return aho_heap[x].term; }
-Aho_Node_Ptr aho_link(Aho_Node_Ptr x) { return aho_heap[x].link; }
+int aho_match_size(Aho_Node_Ptr x) { return aho_heap[x].match_size; }
+int aho_count(Aho_Node_Ptr x) { return aho_heap[x].inside_term; }
 Aho_Node_Ptr aho_go(Aho_Node_Ptr x, size_t c) { return aho_heap[x].to[c]; }
+
+Aho_Node_Ptr aho_link(Aho_Node_Ptr x) { return aho_heap[x].link; }
+int aho_size(Aho_Node_Ptr x) { return aho_heap[x].size; }
+int aho_term(Aho_Node_Ptr x) { return aho_heap[x].term; }
 
 // return "pointer" to the new aho-corasick node
 Aho_Node_Ptr aho_make() {
@@ -105,22 +128,22 @@ void aho_build(Aho_Node_Ptr root) {
   Aho_Queue q = {0};
   aho_queue_push(&q, root);
   aho_heap[root].link = root;
+  aho_heap[root].size = aho_heap[root].match_size = 0;
 
   while (q.count > 0) {
     Aho_Node_Ptr x = aho_queue_pop(&q);
     aho_heap[x].inside_term = aho_heap[aho_link(x)].inside_term + aho_term(x);
+    aho_heap[x].match_size =
+        aho_term(x) ? aho_size(x) : aho_match_size(aho_link(x));
     for (size_t i = 0; i < AHO_ALPHABET; i++) {
       Aho_Node_Ptr y = aho_go(x, i);
       if (y == -1) { // go(x, c)
         aho_heap[x].to[i] = x == root ? root : aho_go(aho_link(x), i);
       } else { // link(y)
         aho_heap[y].link = x == root ? root : aho_go(aho_link(x), i);
+        aho_heap[y].size = aho_size(x) + 1;
         aho_queue_push(&q, y);
       }
     }
   }
 }
-
-// aho_count()
-
-int aho_count(Aho_Node_Ptr x) { return aho_heap[x].inside_term; }

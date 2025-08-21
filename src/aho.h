@@ -8,6 +8,7 @@ void aho_build(Aho_Node_Ptr root);
 
 // use:
 int aho_count(Aho_Node_Ptr x);
+int aho_match_size(Aho_Node_Ptr x);
 
 #ifndef AHO_H_
 #define AHO_H_
