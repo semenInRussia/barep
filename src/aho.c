@@ -1,7 +1,5 @@
 // implementation of aho corasick
 
-#define _CRT_SECURE_NO_WARNINGS
-
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,24 +13,24 @@ typedef int Aho_Node_Ptr;
 // each node of aho corasick tree can be represented be any string.  To be
 // simpler I will be consider string and node as the same.
 
-typedef struct {
+typedef struct Aho {
   // amount of templates in aho-corasick tree that's equal to node's string.
-  // these nodes are called terminal, so i named variable `term`
+  // these nodes are called terminal nodes, so i named the variable `term`
   int term;
+
+  // check the string of node, count all substrings that are input templates
+  int inside_term;
 
   // after `aho_build`, they will be finite-state machine transitions, before
   // to[c] is pointer to children in default trie
   Aho_Node_Ptr to[AHO_ALPHABET];
   Aho_Node_Ptr link;
-
-  // check the string of node, count all substrings that are input templates
-  int inside_term; // must be -1 if it have not computed yet
-} Aho;
+} Aho_t;
 
 // maximum amount of aho-corasick nodes, it's must be equal to about the size of
 // all patterns
 #define AHO_HEAP_SZ 4096
-Aho aho_heap[AHO_HEAP_SZ]; // TODO: use vector instead?
+Aho_t aho_heap[AHO_HEAP_SZ]; // TODO: use vector instead?
 static int aho_heap_top = 0;
 
 // work with indexes in aho_heap like it pointer (type Aho_Node_Ptr)
@@ -45,8 +43,8 @@ Aho_Node_Ptr aho_go(Aho_Node_Ptr x, size_t c) { return aho_heap[x].to[c]; }
 Aho_Node_Ptr aho_make() {
   Aho_Node_Ptr j = aho_heap_top;
   ++aho_heap_top;
-  aho_heap[j].inside_term = aho_heap[j].link = -1;
-  aho_heap[j].term = 0;
+  aho_heap[j].link = -1;
+  aho_heap[j].inside_term = aho_heap[j].term = 0;
   for (int i = 0; i < AHO_ALPHABET; i++) {
     aho_heap[j].to[i] = -1;
   }
@@ -74,7 +72,7 @@ typedef struct {
 } Aho_Queue;
 
 void aho_queue_reserve(Aho_Queue *q, size_t sz) {
-  q->items = realloc(q->items, sz * sizeof(struct Aho *));
+  q->items = (Aho_Node_Ptr *)realloc(q->items, sz * sizeof(Aho_Node_Ptr));
   q->capacity = sz;
 }
 
@@ -92,7 +90,7 @@ void aho_queue_push(Aho_Queue *q, Aho_Node_Ptr x) {
   if (q->capacity == 0) {
     aho_queue_reserve(q, AHO_QUEUE_DEFAULT_CAPACITY);
   }
-  if ((size_t)q->r >= q->capacity) {
+  while ((size_t)q->r >= q->capacity) {
     aho_queue_reserve(q, q->capacity * 2 + 1);
   }
   q->items[q->r++] = x;
@@ -110,6 +108,7 @@ void aho_build(Aho_Node_Ptr root) {
 
   while (q.count > 0) {
     Aho_Node_Ptr x = aho_queue_pop(&q);
+    aho_heap[x].inside_term = aho_heap[aho_link(x)].inside_term + aho_term(x);
     for (size_t i = 0; i < AHO_ALPHABET; i++) {
       Aho_Node_Ptr y = aho_go(x, i);
       if (y == -1) { // go(x, c)
@@ -124,14 +123,4 @@ void aho_build(Aho_Node_Ptr root) {
 
 // aho_count()
 
-int aho_count(Aho_Node_Ptr t, Aho_Node_Ptr x) {
-  int ans = aho_heap[x].inside_term;
-  if (ans != -1) {
-    return ans;
-  }
-  if (x == t) {
-    return 0;
-  }
-  aho_heap[x].inside_term = aho_term(x) + aho_term(aho_link(x));
-  return aho_heap[x].inside_term;
-}
+int aho_count(Aho_Node_Ptr x) { return aho_heap[x].inside_term; }
