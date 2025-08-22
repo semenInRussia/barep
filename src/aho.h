@@ -16,6 +16,8 @@ int aho_matches_count(Aho_Node_Ptr x);
 bool aho_is_match(Aho_Node_Ptr x);
 int aho_match_size(Aho_Node_Ptr x);
 
+#define AHO_ALPHABET 1000 // support only characters from 0 to 255 (including)
+
 #ifndef AHO_H_
 #define AHO_H_
 #include "aho.c"
