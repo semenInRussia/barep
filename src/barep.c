@@ -18,7 +18,7 @@ int aho_count_in_file(Aho_Node_Ptr t, FILE *f) {
       continue;
     }
     cur = aho_go(cur, c);
-    ans += aho_count(cur);
+    ans += aho_matches_count(cur);
   }
 
   if (ferror(f)) {
@@ -146,8 +146,10 @@ int main(int argc, const char *argv[]) {
     Aho_Node_Ptr cur = t;
     for (size_t i = 0; buf[i]; i++) {
       cur = aho_go(cur, buf[i]);
-      int sz = aho_match_size(cur);
-      if (sz > 0) {
+      for (Aho_Node_Ptr x = cur; aho_size(x) > 0; x = aho_next_match(x)) {
+        if (!aho_is_match(x))
+          continue;
+        int sz = aho_size(x);
         int beg = i + 1 - sz;
         printf("Word: %.*s\n", sz, &buf[beg]);
         // report occurance like:

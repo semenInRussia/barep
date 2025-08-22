@@ -1,3 +1,7 @@
+// NOTE that documentation is located inside an aho.c file
+
+#include <stdbool.h>
+
 // structs:
 typedef int Aho_Node_Ptr;
 
@@ -7,7 +11,9 @@ void aho_add(Aho_Node_Ptr x, const char *word);
 void aho_build(Aho_Node_Ptr root);
 
 // use:
-int aho_count(Aho_Node_Ptr x);
+Aho_Node_Ptr aho_next_match(Aho_Node_Ptr x);
+int aho_matches_count(Aho_Node_Ptr x);
+bool aho_is_match(Aho_Node_Ptr x);
 int aho_match_size(Aho_Node_Ptr x);
 
 #ifndef AHO_H_
