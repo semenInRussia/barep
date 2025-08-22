@@ -1,75 +1,14 @@
 // implementation of aho corasick
 
+#include "aho.h"
+
 #include <assert.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 
-#define AHO_ALPHABET 1000 // support only characters from 0 to 255 (including)
-
-// Pointer to a node of an aho-corasick tree or -1 that can be considered like
-// NULL.  Here "pointer" is an index in the aho_heap
-typedef int Aho_Node_Ptr;
-
-// each node of aho corasick tree can be represented be any string.  To be
-// simpler I will be consider string and node as the same.
-
-typedef struct Aho {
-  // amount of templates in aho-corasick tree that's equal to node's string.
-  // these nodes are called terminal nodes, so i named the variable `term`
-  int term;
-
-  // check the string of node, count all substrings that are inside "dict"
-  //
-  // you can use aho_matches_count to get this value by pointer
-  //
-  // if you are iterating through text char by char, going from state to state
-  // with `aho_go(t, c)`, then you can sum all states `aho_matches_count` and
-  // get the amount of occurances of "dict"'s words
-  int cnt_matches;
-
-  // if match_size=0, then current state don't contain "dict"'s words, otherwise
-  // match_size indicates the size of the longest match at the current state.
-  //
-  // you can use `aho_match_size` to get this value by pointer
-  //
-  // NOTE that if you need to check matches use `aho_next_match()` (check
-  // above).  Use `aho_match_size` only if you need check the biggiest match at
-  // this node
-  //
-  // if you are iterating through text char by char, going from state to state
-  // with `aho_go(t, c)`, you can get match size and check the found string
-  // because you know the end and the beginning (end-string size).
-  int match_size;
-
-  // convinient way to use states like Aho_t is to iterate through all matches
-  // these state catch.  You can do it using aho_next_match(t) which return the
-  // point to one of the "sub-nodes" which are nodes of strings added into dict
-  //
-  // if node doesn't contain these matches return root state.
-  //
-  // solution is when you have t - the current state iterate through all
-  // aho_count_matches() matches using while-cycle like the following:
-  //
-  //     for (Aho_Node_Ptr x = cur; aho_size(x) > 0; x = aho_next_match(x)) {
-  //       if (aho_is_match(x)) {
-  //         // here a match
-  //       }
-  //     }
-  int nxt_match;
-
-  // the length of node's string
-  int size;
-
-  // after `aho_build`, they will be finite-state machine transitions, before
-  // to[c] is pointer to children in default trie
-  Aho_Node_Ptr to[AHO_ALPHABET];
-  Aho_Node_Ptr link;
-} Aho_t;
-
 // maximum amount of aho-corasick nodes, it's must be equal to about the size of
 // all patterns
-#define AHO_HEAP_SZ 4096
 Aho_t aho_heap[AHO_HEAP_SZ]; // TODO: use vector instead?
 static int aho_heap_top = 0;
 
@@ -110,13 +49,6 @@ void aho_add(Aho_Node_Ptr x, const char *word) {
 
 // bfs build
 
-typedef struct {
-  size_t count;
-  size_t capacity;
-  Aho_Node_Ptr *items;
-  int l, r;
-} Aho_Queue;
-
 void aho_queue_reserve(Aho_Queue *q, size_t sz) {
   q->items = (Aho_Node_Ptr *)realloc(q->items, sz * sizeof(Aho_Node_Ptr));
   q->capacity = sz;
@@ -129,8 +61,6 @@ Aho_Node_Ptr aho_queue_pop(Aho_Queue *q) {
   --q->count;
   return res;
 }
-
-#define AHO_QUEUE_DEFAULT_CAPACITY 2
 
 void aho_queue_push(Aho_Queue *q, Aho_Node_Ptr x) {
   if (q->capacity == 0) {
