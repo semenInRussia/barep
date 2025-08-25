@@ -1,92 +1,211 @@
-#include "aho.h"
+#include <assert.h>
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include <windows.h>
+#include "aho.h"
 
-// return -1, if error happened, otherwise count occurances of words from given
-// aho corasick tree (must be already built) in a given file
-int aho_count_in_file(Aho_Node_Ptr t, FILE *f) {
-  int ans = 0;
-  Aho_Node_Ptr cur = t;
-  char c;
-  while ((c = fgetc(f)) != EOF) {
-    if ((size_t)c >= AHO_ALPHABET) {
-      cur = t; // clear
-      continue;
-    }
-    cur = aho_go(cur, c);
-    ans += aho_matches_count(cur);
+// log functions
+
+#define barep_error(fmt, ...) fprintf(stderr, "ERROR: " fmt, ##__VA_ARGS__)
+
+// parse Command Line Arguments;
+
+typedef struct {
+  size_t capacity;
+  size_t count;
+  const char **items;
+} Barep_Strings;
+
+void barep_strings_reserve(Barep_Strings *p, size_t n) {
+  if (n > p->capacity) {
+    p->capacity = n;
+    p->items = realloc(p->items, n * sizeof(const char *));
   }
-
-  if (ferror(f)) {
-    return -1;
-  }
-
-  return ans;
 }
 
-// return -1, if error happened, otherwise count occurances of words from given
-// aho corasick tree (must be already built) in files of a given directory
-int aho_count_in_dir(Aho_Node_Ptr t, const char *dirname) {
-  HANDLE hfind;
-
-  char pattern[MAX_PATH];
-  snprintf(pattern, sizeof(pattern), "%s\\*", dirname);
-
-  WIN32_FIND_DATA f;
-  hfind = FindFirstFile(pattern, &f);
-
-  if (hfind == INVALID_HANDLE_VALUE) {
-    fprintf(stderr, "ERROR: can't read directory %s\n", pattern);
-    return -1;
+void barep_strings_push(Barep_Strings *p, const char *s) {
+  if (p->count == 0) {
+    barep_strings_reserve(p, 2);
   }
+  while (p->count >= p->capacity) {
+    barep_strings_reserve(p, p->capacity * 2);
+  }
+  p->items[p->count] = s;
+  p->count++;
+}
 
-  int ans = 0;
+void barep_strings_free(Barep_Strings p) { free(p.items); }
 
-  do {
-    const char *filename = f.cFileName;
-    if (strcmp(filename, ".") == 0 || strcmp(filename, "..") == 0) {
-      continue;
-    }
-    char file_path[MAX_PATH];
-    snprintf(file_path, sizeof(file_path), "%s\\%s", dirname, filename);
-    int res = -1;
-    if (f.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-      res = aho_count_in_dir(t, file_path);
-    } else {
-      FILE *f = fopen(file_path, "r");
-      if (f == NULL) {
-        fprintf(stderr, "ERROR: can't read file %s\n", file_path);
-        perror("ERROR: ");
-        continue;
+typedef struct {
+  // show or don't show:
+  bool show_line_numbers;
+  bool show_filenames;
+
+  // input:
+  Barep_Strings input;
+
+  // patterns:
+  Barep_Strings p;
+
+  // if true, only count occurances (don't display lines)
+  bool only_count;
+
+  // if true, print help and exit
+  bool help;
+} Barep_Params;
+
+Barep_Params barep_params_default() {
+  Barep_Params p = {0};
+
+  p.show_line_numbers = true;
+  p.show_filenames = true;
+
+  // defaults to empty ones
+  // p.input = ;
+  // p.p = ;
+
+  p.only_count = false;
+  p.help = false;
+
+  return p;
+}
+
+void barep_params_free(Barep_Params p) {
+  barep_strings_free(p.input);
+  barep_strings_free(p.p);
+}
+
+#define barep_shift(argc, argv) (assert(argc > 0), --argc, ++argv)
+
+char *barep_owned(const char *s) {
+  size_t len = strlen(s);
+  // size_t sz = sizeof(*s) * (len + 1);
+  char *out = malloc(sizeof(s[0]) * (len + 1));
+  memcpy(out, s, len + 1);
+  return out;
+}
+
+// barep PATH [OPTIONS] [[-e] PATTERNS ...]
+int barep_parse_args(int argc, const char **argv, Barep_Params *p) {
+  barep_shift(argc, argv);
+
+  // input was specified
+  bool fl_input = false;
+
+  while (argc > 0) {
+    const char *arg = argv[0];
+    size_t arg_sz = strlen(arg);
+    barep_shift(argc, argv);
+
+    if (arg[0] == '-') {
+      bool nxt = false;
+      for (size_t i = 1; i < arg_sz; i++) {
+        switch (arg[i]) {
+        case 'h': {
+          p->help = true;
+          return 0;
+        } break;
+        // add pattern, even if it starts with -
+        case 'e': {
+          if (nxt) {
+            barep_error("two letters in - flag require in the same argument\n");
+            return 1;
+          }
+          if (argc == 0) {
+            barep_error("-e require pattern\n");
+            return 1;
+          }
+          nxt = true;
+          barep_strings_push(&p->p, barep_owned(argv[0]));
+          barep_shift(argc, argv);
+        } break;
+        // add a file/directory to input
+        case 'f': {
+          if (nxt) {
+            barep_error("two letters in - flag require in the same argument\n");
+            return 1;
+          }
+          if (argc == 0) {
+            barep_error("-f require filename\n");
+            return 1;
+          }
+          nxt = true;
+          barep_strings_push(&p->input, barep_owned(argv[0]));
+          barep_shift(argc, argv);
+        } break;
+        // don't show files
+        case 'q': {
+          p->show_filenames = false;
+        } break;
+        // don't display line numbers
+        case 'n': {
+          p->show_line_numbers = false;
+        } break;
+        // only count occurances of templates
+        case 'c': {
+          assert(0 && "-c is not implemented yeet\n");
+          p->only_count = true;
+        } break;
+        }
       }
-      res = aho_count_in_file(t, f);
-      fclose(f);
-      if (res == -1) {
-        fprintf(stderr, "ERROR: I/O error on file %s\n", file_path);
+    } else { // handle argument without - at start
+      if (fl_input) {
+        barep_strings_push(&p->p, barep_owned(arg));
+      } else {
+        barep_strings_push(&p->input, barep_owned(arg));
+        fl_input = true;
       }
     }
-    ans += res;
-  } while (FindNextFile(hfind, &f) != 0);
+  }
 
-  FindClose(hfind);
+  if (p->input.count == 0) {
+    barep_error("no input are provided\n");
+    return 1;
+  }
 
-  return ans;
+  if (p->p.count == 0) {
+    barep_error("no patterns are provided\n");
+    return 1;
+  }
+
+  return 0;
 }
 
-void usage(const char *program) {
-  printf("Usage: %s <input> ... [templates]\n", program);
+// barep PATH [OPTIONS] [[-e] PATTERNS ...]
+void barep_usage(const char *prog) { //
+  printf("Usage: %s FILE [OPTIONS] [[-e] PATTERNS...]\n", prog);
+  printf("barep (Bar Rep, br) searches the current directory or file\n");
+  printf("for occurances of given patterns.\n");
+  printf("\n");
+  printf("You can provide files/directories using -f flag or first argument\n");
+  printf("that isn't started at - will be checked as file/dir\n");
+  printf("\n");
+  printf("Use -h flag for more details.\n");
 }
 
-// return exit code, like it is main
-int barep_process_file(Aho_Node_Ptr t, const char *filename) {
+void barep_help() {
+  printf("The following OPTIONS are accepted:\n");
+  printf("-h\tPrint this usage information message and exit\n");
+  printf("-c\tdon't show occurances (only count them)\n");
+  printf("-e\tAdd a pattern literally (even if started with dash -)\n");
+  printf("-e\tadd an input file");
+  printf("-n\tDon't display line numbers\n");
+  printf("-q\tdon't show filenames when display n pattern occurance\n");
+  printf("\n");
+  printf("Author is @semenInRussia (:GitHub)\n");
+}
+
+// bool barep_is_dir(const char *filename) {}
+// bool barep_is_exist(const char *filename) {}
+
+int barep_process_file(const char *filename, Aho_Node_Ptr t, Barep_Params p) {
   FILE *f = fopen(filename, "r");
 
   if (f == NULL) {
-    fprintf(stderr, "ERROR: Can't read a given file: %s\n", filename);
+    barep_error("can't open file: %s\n", filename);
     perror("ERROR");
     return 1;
   }
@@ -98,24 +217,22 @@ int barep_process_file(Aho_Node_Ptr t, const char *filename) {
     ++line;
     Aho_Node_Ptr cur = t;
     for (size_t i = 0; buf[i]; i++) {
-      cur = aho_go(cur, buf[i]);
-      if ((size_t)buf[i] >= AHO_ALPHABET) {
-        cur = t; // clear
+      if ((size_t)buf[i] >= AHO_ALPHABET) { // clear state
+        cur = t;
         continue;
       }
-      for (Aho_Node_Ptr x = cur; aho_size(x) > 0; x = aho_next_match(x)) {
-        if (!aho_is_match(x))
-          continue;
+      cur = aho_go(cur, buf[i]);
+      for (Aho_Node_Ptr x = aho_match_iter(cur); !aho_is_start(x);
+           x = aho_next_match(x)) {
         int sz = aho_size(x);
-        int beg = i + 1 - sz;
-        printf("Word: %.*s\n", sz, &buf[beg]);
-        // report occurance like:
-        // src/aho.c:160.14-16:     int sz = aho_match_size(cur);
-        printf("%s:%zu.%d-%zu: %s\n",
-               filename,      // file
-               line, beg + 1, // from
-               i + 1,         // to
-               buf);          // message
+        int beg = i - sz + 1;
+        if (p.show_filenames) {
+          printf("%s:", filename);
+        }
+        if (p.show_line_numbers) {
+          printf("%zu:%d-%zu: ", line, beg, i);
+        }
+        printf("%s", buf);
       }
     }
   }
@@ -125,57 +242,30 @@ int barep_process_file(Aho_Node_Ptr t, const char *filename) {
   return 0;
 }
 
-int barep_process_dir(Aho_Node_Ptr t, const char *dirname) {
-  HANDLE hfind;
-  char pattern[MAX_PATH];
-  snprintf(pattern, sizeof(pattern), "%s\\*", dirname);
-
-  WIN32_FIND_DATA f;
-  hfind = FindFirstFile(pattern, &f);
-
-  if (hfind == INVALID_HANDLE_VALUE) {
-    fprintf(stderr, "ERROR: can't read directory %s\n", pattern);
-    return -1;
+int main(int argc, const char **argv) {
+  Barep_Params p = barep_params_default();
+  int r = barep_parse_args(argc, argv, &p);
+  if (r != 0) {
+    printf("\n");
+    barep_usage(argv[0]);
+    return r;
   }
 
-  do {
-    const char *filename = f.cFileName;
-    if (strcmp(filename, ".") == 0 || strcmp(filename, "..") == 0) {
-      continue;
-    }
-    char file_path[MAX_PATH];
-    snprintf(file_path, sizeof(file_path), "%s\\%s", dirname, filename);
-    if (f.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-      barep_process_dir(t, file_path);
-    } else {
-      barep_process_file(t, file_path);
-    }
-  } while (FindNextFile(hfind, &f) != 0);
-
-  FindClose(hfind);
-
-  return 0;
-}
-
-int main(int argc, const char *argv[]) {
-  // argv[1] - string
-  // argv[2], argv[3], ... - templates
-  //
-  // display all occurances
-
-  if (argc == 1) {
-    usage(argv[0]);
-    fprintf(stderr, "ERROR: no input file is provided\n");
-    return 1;
+  if (p.help) {
+    barep_usage(argv[0]);
+    barep_help();
+    return 0;
   }
 
+  // build
   Aho_Node_Ptr t = aho_make();
-  for (int i = 2; i < argc; i++) {
-    aho_add(t, argv[i]);
+  for (size_t i = 0; i < p.p.count; i++) {
+    aho_add(t, p.p.items[0]);
   }
   aho_build(t);
 
-  const char *filename = argv[1];
-  /* barep_process_file(t, filename); */
-  barep_process_dir(t, filename);
+  // process
+  for (size_t i = 0; i < p.input.count; i++) {
+    barep_process_file(p.input.items[i], t, p);
+  }
 }
