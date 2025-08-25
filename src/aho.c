@@ -21,6 +21,7 @@ Aho_Node_Ptr aho_go(Aho_Node_Ptr x, size_t c) { return aho_heap[x].to[c]; }
 
 Aho_Node_Ptr aho_link(Aho_Node_Ptr x) { return aho_heap[x].link; }
 int aho_size(Aho_Node_Ptr x) { return aho_heap[x].size; }
+bool aho_is_start(Aho_Node_Ptr x) { return aho_size(x) == 0; }
 bool aho_is_match(Aho_Node_Ptr x) { return aho_heap[x].term > 0; }
 int aho_term(Aho_Node_Ptr x) { return aho_heap[x].term; }
 
@@ -102,4 +103,12 @@ void aho_build(Aho_Node_Ptr root) {
       aho_queue_push(&q, y);
     }
   }
+}
+
+// aho_match_iter()
+Aho_Node_Ptr aho_match_iter(Aho_Node_Ptr t) {
+  if (aho_is_match(t)) {
+    return t;
+  }
+  return aho_next_match(t);
 }

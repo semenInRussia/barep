@@ -99,6 +99,12 @@ Aho_Node_Ptr aho_go(Aho_Node_Ptr x, size_t c);
 // if the current state have a match, `aho_is_match()` return true
 bool aho_is_match(Aho_Node_Ptr x);
 
+// if the current state is starting return true.
+//
+// in this case you can use anything like memchr to skip text until the first
+// template symbol
+bool aho_is_start(Aho_Node_Ptr x);
+
 // `aho_matches_count()` returns amount of matching at the current state
 int aho_matches_count(Aho_Node_Ptr x);
 
@@ -106,7 +112,13 @@ int aho_matches_count(Aho_Node_Ptr x);
 // the root (aho_size() == 0) jumping through all matches using
 // `aho_next_match()`.
 int aho_size(Aho_Node_Ptr x);
+int aho_match_size(Aho_Node_Ptr x);
 Aho_Node_Ptr aho_next_match(Aho_Node_Ptr x);
+
+// also using function `aho_iter()` you can skip the current state if it isn't a
+// match.  It is useful when you need to iterate through all matches of current
+// state (including overlap matches)
+Aho_Node_Ptr aho_match_iter(Aho_Node_Ptr x);
 
 // using all these functions you can print all occurances and positions where it
 // occured.
@@ -116,15 +128,18 @@ Aho_Node_Ptr aho_next_match(Aho_Node_Ptr x);
 //     Aho_Node_Ptr t = dict;
 //     for (int i = 0; src[i]; i++) {
 //       t = aho_go(t, src[i]);
-//       for (Aho_Node_Ptr x = t; aho_size(x) > 0; x = aho_next_match(x)) {
-//         if (!aho_is_match(x))
-//           continue; // skip not matches
+//       for (Aho_Node_Ptr x = aho_match_iter(t); aho_size(x); x =
+//            aho_next_match(x)) {
 //         int sz = aho_size(x);
 //         // [i-sz+1; i] - is a match
 //         printf("%d: %.*s", i, sz, &src[i + 1 - sz]);
 //       }
 //     }
 
-int aho_match_size(Aho_Node_Ptr x);
+// also the `aho_for_match()` macro is useful to iterate through all iterations
+// it accept variable name and the current state
+#define aho_for_match(x, t)                                                    \
+  for (Aho_Node_Ptr x = aho_match_iter(t); aho_size(x) > 0;                    \
+       x = aho_next_match(x))
 
 #endif // _AHO_H_INCLUDED_
