@@ -13,12 +13,13 @@ typedef int Aho_Node_Ptr;
 // each node of aho corasick tree can be represented be any string.  To be
 // simpler I will be consider string and node as the same.
 
-#define AHO_ALPHABET 1000 // support only characters from 0 to 255 (including)
+#define AHO_ALPHABET 256 // support only characters from 0 to 255 (including)
 
 typedef struct Aho {
-  // amount of templates in aho-corasick tree that's equal to node's string.
-  // these nodes are called terminal nodes, so i named the variable `term`
-  int term;
+  // if this state is matching, `pattern` is equal to the index of this pattern
+  // The index of a pattern is specified when you add it via `aho_add()`.  If
+  // this node isn't matching `pattern` is -1
+  int pattern;
 
   // check the string of node, count all substrings that are inside "dict"
   //
@@ -89,7 +90,7 @@ typedef int Aho_Node_Ptr;
 //     aho_build();
 
 Aho_Node_Ptr aho_make();
-void aho_add(Aho_Node_Ptr x, const char *word);
+void aho_add(Aho_Node_Ptr x, const char *word, int idx);
 void aho_build(Aho_Node_Ptr root);
 
 // Now you can starting from the empty node (you have already computed it).

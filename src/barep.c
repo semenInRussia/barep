@@ -279,7 +279,7 @@ int main(int argc, const char **argv) {
   // build
   Aho_Node_Ptr t = aho_make();
   for (size_t i = 0; i < p.p.count; i++) {
-    aho_add(t, p.p.items[i]);
+    aho_add(t, p.p.items[i], i);
   }
   aho_build(t);
 
