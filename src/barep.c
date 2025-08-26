@@ -7,17 +7,58 @@
 
 #include "aho.h"
 
-// log functions
+// defines
 
-#define barep_error(fmt, ...) fprintf(stderr, "ERROR: " fmt, ##__VA_ARGS__)
+// a string that will be displayed after a file processed
+#define BAREP_FILE_DIVIDER "\n"
 
-// parse Command Line Arguments;
+// structs
 
 typedef struct {
   size_t capacity;
   size_t count;
   const char **items;
 } Barep_Strings;
+
+typedef struct {
+  // show or don't show:
+  bool show_line_numbers;
+  bool show_filenames;
+
+  // input:
+  Barep_Strings input;
+
+  // patterns:
+  Barep_Strings p;
+
+  // if true, only count occurances (don't display lines)
+  bool only_count;
+
+  // if true, print help and exit
+  bool help;
+} Barep_Params;
+
+typedef struct {
+  Aho_Node_Ptr dict;
+  Barep_Params params;
+  size_t count; // keep amount of processed occurances
+} Barep_State;
+
+// log functions
+
+#define barep_error(fmt, ...) fprintf(stderr, "ERROR: " fmt, ##__VA_ARGS__)
+
+// ...
+
+char *barep_owned(const char *s) {
+  size_t len = strlen(s);
+  // size_t sz = sizeof(*s) * (len + 1);
+  char *out = malloc(sizeof(s[0]) * (len + 1));
+  memcpy(out, s, len + 1);
+  return out;
+}
+
+// vector of strings
 
 void barep_strings_reserve(Barep_Strings *p, size_t n) {
   if (n > p->capacity) {
@@ -39,23 +80,7 @@ void barep_strings_push(Barep_Strings *p, const char *s) {
 
 void barep_strings_free(Barep_Strings p) { free(p.items); }
 
-typedef struct {
-  // show or don't show:
-  bool show_line_numbers;
-  bool show_filenames;
-
-  // input:
-  Barep_Strings input;
-
-  // patterns:
-  Barep_Strings p;
-
-  // if true, only count occurances (don't display lines)
-  bool only_count;
-
-  // if true, print help and exit
-  bool help;
-} Barep_Params;
+// parse command line arguments
 
 Barep_Params barep_params_default() {
   Barep_Params p = {0};
@@ -80,20 +105,9 @@ void barep_params_free(Barep_Params p) {
 
 #define barep_shift(argc, argv) (assert(argc > 0), --argc, ++argv)
 
-char *barep_owned(const char *s) {
-  size_t len = strlen(s);
-  // size_t sz = sizeof(*s) * (len + 1);
-  char *out = malloc(sizeof(s[0]) * (len + 1));
-  memcpy(out, s, len + 1);
-  return out;
-}
-
 // barep PATH [OPTIONS] [[-e] PATTERNS ...]
 int barep_parse_args(int argc, const char **argv, Barep_Params *p) {
   barep_shift(argc, argv);
-
-  // input was specified
-  bool fl_input = false;
 
   while (argc > 0) {
     const char *arg = argv[0];
@@ -146,17 +160,15 @@ int barep_parse_args(int argc, const char **argv, Barep_Params *p) {
         } break;
         // only count occurances of templates
         case 'c': {
-          assert(0 && "-c is not implemented yeet\n");
           p->only_count = true;
         } break;
         }
       }
     } else { // handle argument without - at start
-      if (fl_input) {
+      if (p->input.count) {
         barep_strings_push(&p->p, barep_owned(arg));
       } else {
         barep_strings_push(&p->input, barep_owned(arg));
-        fl_input = true;
       }
     }
   }
@@ -173,6 +185,57 @@ int barep_parse_args(int argc, const char **argv, Barep_Params *p) {
 
   return 0;
 }
+
+// process file
+
+int barep_process_file(const char *filename, Barep_State *s) {
+  FILE *f = fopen(filename, "r");
+
+  if (f == NULL) {
+    barep_error("can't open file: %s\n", filename);
+    perror("ERROR");
+    return 1;
+  }
+
+  char buf[4096];
+  size_t line = 0;
+
+  while (fgets(buf, sizeof buf, f) != NULL) {
+    ++line;
+    Aho_Node_Ptr cur = s->dict;
+    for (size_t i = 0; buf[i]; i++) {
+      if ((size_t)buf[i] >= AHO_ALPHABET) { // clear state
+        cur = s->dict;
+        continue;
+      }
+      cur = aho_go(cur, buf[i]);
+      s->count += aho_matches_count(cur);
+
+      if (s->params.only_count) {
+        continue;
+      }
+
+      // display occurance
+      aho_for_match(x, cur) {
+        int sz = aho_size(x);
+        int beg = i - sz + 1;
+        if (s->params.show_filenames) {
+          printf("%s:", filename);
+        }
+        if (s->params.show_line_numbers) {
+          printf("%zu:%d-%zu: ", line, beg + 1, i + 1);
+        }
+        printf("%s", buf);
+      }
+    }
+  }
+
+  fclose(f);
+
+  return 0;
+}
+
+// help
 
 // barep PATH [OPTIONS] [[-e] PATTERNS ...]
 void barep_usage(const char *prog) { //
@@ -195,51 +258,7 @@ void barep_help() {
   printf("-n\tDon't display line numbers\n");
   printf("-q\tdon't show filenames when display n pattern occurance\n");
   printf("\n");
-  printf("Author is @semenInRussia (:GitHub)\n");
-}
-
-// bool barep_is_dir(const char *filename) {}
-// bool barep_is_exist(const char *filename) {}
-
-int barep_process_file(const char *filename, Aho_Node_Ptr t, Barep_Params p) {
-  FILE *f = fopen(filename, "r");
-
-  if (f == NULL) {
-    barep_error("can't open file: %s\n", filename);
-    perror("ERROR");
-    return 1;
-  }
-
-  char buf[4096];
-  size_t line = 0;
-
-  while (fgets(buf, sizeof buf, f) != NULL) {
-    ++line;
-    Aho_Node_Ptr cur = t;
-    for (size_t i = 0; buf[i]; i++) {
-      if ((size_t)buf[i] >= AHO_ALPHABET) { // clear state
-        cur = t;
-        continue;
-      }
-      cur = aho_go(cur, buf[i]);
-      for (Aho_Node_Ptr x = aho_match_iter(cur); !aho_is_start(x);
-           x = aho_next_match(x)) {
-        int sz = aho_size(x);
-        int beg = i - sz + 1;
-        if (p.show_filenames) {
-          printf("%s:", filename);
-        }
-        if (p.show_line_numbers) {
-          printf("%zu:%d-%zu: ", line, beg, i);
-        }
-        printf("%s", buf);
-      }
-    }
-  }
-
-  fclose(f);
-
-  return 0;
+  printf("Author is @semenInRussia [GitHub]\n");
 }
 
 int main(int argc, const char **argv) {
@@ -260,12 +279,21 @@ int main(int argc, const char **argv) {
   // build
   Aho_Node_Ptr t = aho_make();
   for (size_t i = 0; i < p.p.count; i++) {
-    aho_add(t, p.p.items[0]);
+    aho_add(t, p.p.items[i]);
   }
   aho_build(t);
 
   // process
+  Barep_State s = {.dict = t, .params = p, .count = 0};
   for (size_t i = 0; i < p.input.count; i++) {
-    barep_process_file(p.input.items[i], t, p);
+    // if file haven't matches don't display divider
+    size_t old = s.count;
+    barep_process_file(p.input.items[i], &s);
+    if (!p.only_count && s.count > old) {
+      printf("%s", BAREP_FILE_DIVIDER);
+    }
   }
+
+  // footer
+  printf("Found %zu occurances of given templates", s.count);
 }
