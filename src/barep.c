@@ -5,6 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <windows.h>
+
 #include "aho.h"
 
 // defines
@@ -89,8 +91,8 @@ Barep_Params barep_params_default() {
   p.show_filenames = true;
 
   // defaults to empty ones
-  // p.input = ;
-  // p.p = ;
+  // p.input = ; // input files/directories
+  // p.p = ; // patterns
 
   p.only_count = false;
   p.help = false;
@@ -186,9 +188,9 @@ int barep_parse_args(int argc, const char **argv, Barep_Params *p) {
   return 0;
 }
 
-// process file
+// process
 
-int barep_process_file(const char *filename, Barep_State *s) {
+int barep_file(const char *filename, Barep_State *s) {
   FILE *f = fopen(filename, "r");
 
   if (f == NULL) {
@@ -208,24 +210,23 @@ int barep_process_file(const char *filename, Barep_State *s) {
         cur = s->dict;
         continue;
       }
+
       cur = aho_go(cur, buf[i]);
       s->count += aho_matches_count(cur);
 
-      if (s->params.only_count) {
-        continue;
-      }
-
       // display occurance
-      aho_for_match(x, cur) {
-        int sz = aho_size(x);
-        int beg = i - sz + 1;
-        if (s->params.show_filenames) {
-          printf("%s:", filename);
+      if (!s->params.only_count) {
+        aho_for_match(x, cur) {
+          int sz = aho_size(x);
+          int beg = i - sz + 1;
+          if (s->params.show_filenames) {
+            printf("%s:", filename);
+          }
+          if (s->params.show_line_numbers) {
+            printf("%zu:%d-%zu: ", line, beg + 1, i + 1);
+          }
+          printf("%s", buf);
         }
-        if (s->params.show_line_numbers) {
-          printf("%zu:%d-%zu: ", line, beg + 1, i + 1);
-        }
-        printf("%s", buf);
       }
     }
   }
@@ -233,6 +234,53 @@ int barep_process_file(const char *filename, Barep_State *s) {
   fclose(f);
 
   return 0;
+}
+
+int barep_dir(const char *dirname, Barep_State *s) {
+  HANDLE hfind;
+
+  char pattern[MAX_PATH];
+  snprintf(pattern, sizeof(pattern), "%s\\*", dirname);
+
+  WIN32_FIND_DATA f;
+  hfind = FindFirstFile(pattern, &f);
+
+  if (hfind == INVALID_HANDLE_VALUE) {
+    barep_error("can't read directory %s\n", dirname);
+    return 1;
+  }
+
+  do {
+    const char *fileName = f.cFileName;
+    if (strcmp(fileName, ".") == 0 || strcmp(fileName, "..") == 0) {
+      continue;
+    }
+    char filePath[MAX_PATH];
+    snprintf(filePath, sizeof(filePath), "%s\\%s", dirname, fileName);
+    if (f.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+      barep_dir(filePath, s);
+    } else {
+      barep_file(filePath, s);
+    }
+  } while (FindNextFile(hfind, &f) != 0);
+
+  FindClose(hfind);
+
+  return 0;
+}
+
+bool barep_is_file(const char *filename) {
+  DWORD fileAttr = GetFileAttributesA(filename);
+  return (fileAttr != INVALID_FILE_ATTRIBUTES &&
+          !(fileAttr & FILE_ATTRIBUTE_DIRECTORY));
+}
+
+void barep_file_or_dir(const char *filename, Barep_State *s) {
+  if (barep_is_file(filename)) {
+    barep_file(filename, s);
+  } else {
+    barep_dir(filename, s);
+  }
 }
 
 // help
@@ -278,8 +326,10 @@ int main(int argc, const char **argv) {
 
   // build
   Aho_Node_Ptr t = aho_make();
+
   for (size_t i = 0; i < p.p.count; i++) {
-    aho_add(t, p.p.items[i], i);
+    const char *pat = p.p.items[i];
+    aho_add(t, pat, i);
   }
   aho_build(t);
 
@@ -288,7 +338,7 @@ int main(int argc, const char **argv) {
   for (size_t i = 0; i < p.input.count; i++) {
     // if file haven't matches don't display divider
     size_t old = s.count;
-    barep_process_file(p.input.items[i], &s);
+    barep_file_or_dir(p.input.items[i], &s);
     if (!p.only_count && s.count > old) {
       printf("%s", BAREP_FILE_DIVIDER);
     }
