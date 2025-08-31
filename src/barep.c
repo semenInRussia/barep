@@ -41,20 +41,27 @@ typedef struct {
 } Barep_Params;
 
 typedef struct {
+  char *items;
+  size_t capacity;
+  size_t count;
+} Barep_Str;
+
+typedef struct {
   Aho_Node_Ptr dict;
   Barep_Params params;
   size_t count; // keep amount of processed occurances
+  Barep_Str pref;
 } Barep_State;
 
 // log functions
 
 #define barep_error(fmt, ...) fprintf(stderr, "ERROR: " fmt, ##__VA_ARGS__)
+#define barep_perror() perror("ERROR")
 
 // ...
 
 char *barep_owned(const char *s) {
   size_t len = strlen(s);
-  // size_t sz = sizeof(*s) * (len + 1);
   char *out = malloc(sizeof(s[0]) * (len + 1));
   memcpy(out, s, len + 1);
   return out;
@@ -73,7 +80,7 @@ void barep_strings_push(Barep_Strings *p, const char *s) {
   if (p->count == 0) {
     barep_strings_reserve(p, 2);
   }
-  while (p->count >= p->capacity) {
+  while (p->count + 1 >= p->capacity) {
     barep_strings_reserve(p, p->capacity * 2);
   }
   p->items[p->count] = s;
@@ -188,49 +195,118 @@ int barep_parse_args(int argc, const char **argv, Barep_Params *p) {
   return 0;
 }
 
+// strings
+
+Barep_Str barep_str_slice(char *beg, char *end) {
+  Barep_Str str;
+  str.items = beg;
+  str.capacity = 0;
+  str.count = end - beg;
+  return str;
+}
+
+Barep_Str barep_str_new() { return barep_str_slice(0, 0); }
+
+void barep_str_free(Barep_Str *s) { free((void *)s->items); }
+
+void barep_str_fit(Barep_Str *s, size_t sz) {
+  while (s->capacity < sz) {
+    s->capacity = s->capacity == 0 ? 16 : s->capacity * 2;
+  }
+  s->items = realloc((void *)s->items, sizeof(s->items[0]) * s->capacity);
+}
+
+void barep_str_push(Barep_Str *a, Barep_Str b) {
+  barep_str_fit(a, a->count + b.count);
+  memcpy((void *)&a->items[a->count], b.items, sizeof(b.items[0]) * b.count);
+}
+
+void barep_str_print(Barep_Str a) { printf("%.*s", (int)a.count, a.items); }
+
 // process
+
+void barep__file_print_matches(const char *filename, size_t j, size_t cnt,
+                               size_t line, size_t begl, char *buf,
+                               Barep_Str pref, Barep_State *s) {
+  if (s->params.only_count) {
+    return;
+  }
+  for (size_t k = 0; k < cnt; k++) {
+    if (s->params.show_filenames) {
+      printf("%s:", filename);
+    }
+    if (s->params.show_line_numbers) {
+      printf("%zu:", line + 1);
+    }
+    barep_str_print(pref);
+    barep_str_print(barep_str_slice(&buf[begl], &buf[j]));
+    printf("\n");
+  }
+}
 
 int barep_file(const char *filename, Barep_State *s) {
   FILE *f = fopen(filename, "r");
 
   if (f == NULL) {
     barep_error("can't open file: %s\n", filename);
-    perror("ERROR");
+    barep_perror();
     return 1;
   }
 
-  char buf[4096];
-  size_t line = 0;
+  // read a file with chunks size=4096
+  // go character by character.
+  // if a match save it
+  // if end of line print matches (keep `begl` and `endl`)
+  // if end of a buffer, keep prefix of a line
+  // also needed `line` & `col`
 
-  while (fgets(buf, sizeof buf, f) != NULL) {
-    ++line;
-    Aho_Node_Ptr cur = s->dict;
-    for (size_t i = 0; buf[i]; i++) {
-      if ((size_t)buf[i] >= AHO_ALPHABET) { // clear state
+  const int CHUNK = 4096;
+  char buf[CHUNK];
+  size_t begl = 0;
+  size_t line = 0;
+  size_t col = 0;
+  size_t cnt = 0; // count matchces
+
+  Aho_Node_Ptr cur = s->dict;
+  size_t j;
+
+  while (true) {
+    size_t rd = fread(buf, sizeof(buf[0]), CHUNK, f);
+    if (rd < CHUNK && ferror(f)) {
+      barep_error("I/O while reading file: %s\n", filename);
+      barep_perror();
+      return 1;
+    }
+
+    for (j = 0; j < rd; j++, col++) {
+      if ((size_t)buf[j] >= AHO_ALPHABET) {
         cur = s->dict;
         continue;
       }
-
-      cur = aho_go(cur, buf[i]);
+      cur = aho_go(cur, buf[j]);
+      cnt += aho_matches_count(cur);
       s->count += aho_matches_count(cur);
-
-      // display occurance
-      if (!s->params.only_count) {
-        aho_for_match(x, cur) {
-          int sz = aho_size(x);
-          int beg = i - sz + 1;
-          if (s->params.show_filenames) {
-            printf("%s:", filename);
-          }
-          if (s->params.show_line_numbers) {
-            printf("%zu:%d-%zu: ", line, beg + 1, i + 1);
-          }
-          printf("%s", buf);
-        }
+      if (buf[j] == '\n') {
+        barep__file_print_matches(filename, j, cnt, line, begl, buf, s->pref,
+                                  s);
+        ++line;
+        col = 0;
+        s->pref.count = 0;
+        cnt = 0;
+        begl = j + 1;
       }
     }
+
+    if (feof(f)) {
+      break;
+    }
+
+    // read other chunk
+    barep_str_push(&s->pref, barep_str_slice(buf + begl, buf + CHUNK));
+    begl = 0;
   }
 
+  barep__file_print_matches(filename, j, cnt, line, begl, buf, s->pref, s);
   fclose(f);
 
   return 0;
@@ -326,7 +402,6 @@ int main(int argc, const char **argv) {
 
   // build
   Aho_Node_Ptr t = aho_make();
-
   for (size_t i = 0; i < p.p.count; i++) {
     const char *pat = p.p.items[i];
     aho_add(t, pat, i);
