@@ -4,6 +4,7 @@
 #define _AHO_H_INCLUDED_
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 // Pointer to a node of an aho-corasick tree or -1 that can be considered like
