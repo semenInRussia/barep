@@ -1,8 +1,29 @@
-# Bar Rep (br)
+# Bar ReP (brp)
 
-`barrep` is a search tool similar to [grep](https://www.gnu.org/software/grep/) or [ripgrep](https://github.com/BurntSushi/ripgrep), but `barrep` is written in the most powerful language C by [me](https://github.com/semenInRussia/ "@semenInRussia"), so it's even better.
+`barep` is a search tool similar to [grep](https://www.gnu.org/software/grep/) or [ripgrep](https://github.com/BurntSushi/ripgrep), but `barep` is written in the most powerful language C by [me](https://github.com/semenInRussia/ "@semenInRussia"), so it's even better.
 
 The killer feature of this tool is that it doesn't support regular expressions
+
+```
+Usage: ./brp FILE [OPTIONS] [[-e] PATTERNS...]
+barep searches the given directory or file
+for occurrences of given patterns.
+
+You can provide files/directories using -f flag or first argument
+that doesn't start with - will be checked as file/dir.
+
+Use -h flag for more details.
+The following OPTIONS are accepted:
+-h	Print usage information and exit
+-c	Don't show occurrences, only count them
+-e	Add a pattern literally, even if it starts with '-'
+-f	Add an input file or directory
+-j	Use up to N worker processes (Linux/macOS)
+-n	Don't display line numbers
+-q	Don't show filenames
+
+Author is @semenInRussia [GitHub]
+```
 
 ## under the hood
 
