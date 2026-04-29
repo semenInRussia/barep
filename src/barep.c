@@ -1,6 +1,7 @@
 #include <assert.h>
 
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,6 +10,9 @@
 #include <errno.h>
 #include <limits.h>
 #include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include "aho.h"
 
@@ -33,6 +37,7 @@ typedef struct {
 
   bool only_count;
   bool help;
+  size_t jobs;
 } Barep_Params;
 
 typedef struct {
@@ -42,11 +47,29 @@ typedef struct {
 } Barep_Str;
 
 typedef struct {
+  size_t capacity;
+  size_t count;
+  char **items;
+} Barep_Paths;
+
+typedef struct {
   Aho_Node_Ptr dict;
   Barep_Params params;
   size_t count;
   Barep_Str pref;
+  FILE *out;
 } Barep_State;
+
+typedef struct {
+  uint64_t count;
+  int32_t status;
+} Barep_Worker_Header;
+
+typedef struct {
+  pid_t pid;
+  int read_fd;
+  char output_path[PATH_MAX];
+} Barep_Worker;
 
 // log functions
 
@@ -114,6 +137,7 @@ Barep_Params barep_params_default(void) {
 
   p.only_count = false;
   p.help = false;
+  p.jobs = 1;
 
   return p;
 }
@@ -124,6 +148,20 @@ void barep_params_free(Barep_Params p) {
 }
 
 #define barep_shift(argc, argv) (assert((argc) > 0), --(argc), ++(argv))
+
+int barep_parse_jobs(const char *arg, size_t *jobs) {
+  char *end = NULL;
+  errno = 0;
+
+  unsigned long long value = strtoull(arg, &end, 10);
+  if (errno != 0 || end == arg || *end != '\0' || value == 0) {
+    barep_error("invalid worker count: %s\n", arg);
+    return 1;
+  }
+
+  *jobs = (size_t)value;
+  return 0;
+}
 
 // barep PATH [OPTIONS] [[-e] PATTERNS ...]
 int barep_parse_args(int argc, const char **argv, Barep_Params *p) {
@@ -174,6 +212,19 @@ int barep_parse_args(int argc, const char **argv, Barep_Params *p) {
 
           nxt = true;
           barep_strings_push(&p->input, barep_owned(argv[0]));
+          barep_shift(argc, argv);
+          break;
+
+        case 'j':
+          if (argc == 0) {
+            barep_error("-j requires worker count\n");
+            return 1;
+          }
+
+          nxt = true;
+          if (barep_parse_jobs(argv[0], &p->jobs) != 0) {
+            return 1;
+          }
           barep_shift(argc, argv);
           break;
 
@@ -265,29 +316,80 @@ void barep_str_push(Barep_Str *a, Barep_Str b) {
   a->count += b.count;
 }
 
-void barep_str_print(Barep_Str a) { printf("%.*s", (int)a.count, a.items); }
+void barep_str_print(FILE *out, Barep_Str a) {
+  if (a.count == 0) {
+    return;
+  }
+
+  fwrite(a.items, sizeof(a.items[0]), a.count, out);
+}
+
+void barep_str_reset(Barep_Str *s) { s->count = 0; }
+
+// vector of paths
+
+void barep_paths_reserve(Barep_Paths *paths, size_t n) {
+  if (n <= paths->capacity) {
+    return;
+  }
+
+  char **new_items =
+      (char **)realloc(paths->items, n * sizeof(paths->items[0]));
+  if (new_items == NULL) {
+    barep_perror();
+    exit(1);
+  }
+
+  paths->items = new_items;
+  paths->capacity = n;
+}
+
+void barep_paths_push(Barep_Paths *paths, const char *path) {
+  if (paths->capacity == 0) {
+    barep_paths_reserve(paths, 16);
+  }
+
+  if (paths->count == paths->capacity) {
+    barep_paths_reserve(paths, paths->capacity * 2);
+  }
+
+  paths->items[paths->count++] = barep_owned(path);
+}
+
+void barep_paths_free(Barep_Paths *paths) {
+  for (size_t i = 0; i < paths->count; ++i) {
+    free(paths->items[i]);
+  }
+
+  free(paths->items);
+  paths->items = NULL;
+  paths->capacity = 0;
+  paths->count = 0;
+}
 
 // process
 
 void barep__file_print_matches(const char *filename, size_t j, size_t cnt,
                                size_t line, size_t begl, char *buf,
                                Barep_Str pref, Barep_State *s) {
+  FILE *out = s->out == NULL ? stdout : s->out;
+
   if (s->params.only_count) {
     return;
   }
 
   for (size_t k = 0; k < cnt; k++) {
     if (s->params.show_filenames) {
-      printf("%s:", filename);
+      fprintf(out, "%s:", filename);
     }
 
     if (s->params.show_line_numbers) {
-      printf("%zu:", line + 1);
+      fprintf(out, "%zu:", line + 1);
     }
 
-    barep_str_print(pref);
-    barep_str_print(barep_str_slice(&buf[begl], &buf[j]));
-    printf("\n");
+    barep_str_print(out, pref);
+    barep_str_print(out, barep_str_slice(&buf[begl], &buf[j]));
+    fputc('\n', out);
   }
 }
 
@@ -339,7 +441,7 @@ int barep_file(const char *filename, Barep_State *s) {
                                   s);
 
         ++line;
-        s->pref.count = 0;
+        barep_str_reset(&s->pref);
         cnt = 0;
         begl = j + 1;
       }
@@ -359,7 +461,24 @@ int barep_file(const char *filename, Barep_State *s) {
   return 0;
 }
 
-// Linux filesystem
+int barep_process_paths_range(const Barep_Paths *paths, size_t begin,
+                              size_t end, Barep_State *s) {
+  int status = 0;
+
+  for (size_t i = begin; i < end; ++i) {
+    if (barep_file(paths->items[i], s) != 0) {
+      status = 1;
+    }
+  }
+
+  return status;
+}
+
+int barep_process_paths_serial(const Barep_Paths *paths, Barep_State *s) {
+  return barep_process_paths_range(paths, 0, paths->count, s);
+}
+
+// filesystem
 
 bool barep_is_file(const char *path) {
   struct stat st;
@@ -381,7 +500,7 @@ bool barep_is_dir(const char *path) {
   return S_ISDIR(st.st_mode);
 }
 
-int barep_dir(const char *dirname, Barep_State *s) {
+int barep_collect_dir(const char *dirname, Barep_Paths *paths) {
   DIR *dir = opendir(dirname);
 
   if (dir == NULL) {
@@ -416,9 +535,12 @@ int barep_dir(const char *dirname, Barep_State *s) {
     }
 
     if (S_ISDIR(st.st_mode)) {
-      barep_dir(path, s);
+      if (barep_collect_dir(path, paths) != 0) {
+        closedir(dir);
+        return 1;
+      }
     } else if (S_ISREG(st.st_mode)) {
-      barep_file(path, s);
+      barep_paths_push(paths, path);
     }
   }
 
@@ -426,14 +548,269 @@ int barep_dir(const char *dirname, Barep_State *s) {
   return 0;
 }
 
-void barep_file_or_dir(const char *path, Barep_State *s) {
+int barep_collect_input(const char *path, Barep_Paths *paths) {
   if (barep_is_file(path)) {
-    barep_file(path, s);
+    barep_paths_push(paths, path);
+    return 0;
   } else if (barep_is_dir(path)) {
-    barep_dir(path, s);
+    return barep_collect_dir(path, paths);
   } else {
     barep_error("not a regular file or directory: %s\n", path);
+    return 1;
   }
+}
+
+size_t barep_min_size(size_t a, size_t b) { return a < b ? a : b; }
+
+int barep_write_full(int fd, const void *buf, size_t sz) {
+  const char *p = (const char *)buf;
+  size_t off = 0;
+
+  while (off < sz) {
+    ssize_t wr = write(fd, p + off, sz - off);
+    if (wr < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+
+      return 1;
+    }
+
+    off += (size_t)wr;
+  }
+
+  return 0;
+}
+
+int barep_read_full(int fd, void *buf, size_t sz) {
+  char *p = (char *)buf;
+  size_t off = 0;
+
+  while (off < sz) {
+    ssize_t rd = read(fd, p + off, sz - off);
+    if (rd < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+
+      return 1;
+    }
+
+    if (rd == 0) {
+      return 1;
+    }
+
+    off += (size_t)rd;
+  }
+
+  return 0;
+}
+
+int barep_copy_file(FILE *out, const char *path) {
+  FILE *in = fopen(path, "r");
+  if (in == NULL) {
+    barep_error("can't open worker output: %s\n", path);
+    barep_perror();
+    return 1;
+  }
+
+  char buf[4096];
+  int status = 0;
+
+  while (true) {
+    size_t rd = fread(buf, sizeof(buf[0]), sizeof(buf), in);
+    if (rd > 0) {
+      if (fwrite(buf, sizeof(buf[0]), rd, out) != rd) {
+        barep_error("can't write merged output\n");
+        barep_perror();
+        status = 1;
+        break;
+      }
+    }
+
+    if (rd < sizeof(buf)) {
+      if (ferror(in)) {
+        barep_error("can't read worker output: %s\n", path);
+        barep_perror();
+        status = 1;
+      }
+      break;
+    }
+  }
+
+  fclose(in);
+  return status;
+}
+
+int barep_spawn_worker(Barep_Worker *worker, const Barep_Paths *paths,
+                       size_t begin, size_t end, Barep_State *s) {
+  int pipefd[2];
+  if (pipe(pipefd) != 0) {
+    barep_error("can't create worker pipe\n");
+    barep_perror();
+    return 1;
+  }
+
+  snprintf(worker->output_path, sizeof(worker->output_path),
+           "/tmp/barep-worker-XXXXXX");
+  int output_fd = mkstemp(worker->output_path);
+  if (output_fd < 0) {
+    barep_error("can't create worker output file\n");
+    barep_perror();
+    close(pipefd[0]);
+    close(pipefd[1]);
+    return 1;
+  }
+
+  pid_t pid = fork();
+  if (pid < 0) {
+    barep_error("can't fork worker\n");
+    barep_perror();
+    close(pipefd[0]);
+    close(pipefd[1]);
+    close(output_fd);
+    unlink(worker->output_path);
+    return 1;
+  }
+
+  if (pid == 0) {
+    close(pipefd[0]);
+
+    FILE *out = fdopen(output_fd, "w");
+    if (out == NULL) {
+      close(output_fd);
+      _exit(1);
+    }
+
+    Barep_State child = *s;
+    child.count = 0;
+    child.pref = barep_str_new();
+    child.out = out;
+
+    int status = barep_process_paths_range(paths, begin, end, &child);
+
+    fflush(out);
+    fclose(out);
+
+    Barep_Worker_Header header = {
+        .count = (uint64_t)child.count,
+        .status = status,
+    };
+
+    if (barep_write_full(pipefd[1], &header, sizeof(header)) != 0) {
+      close(pipefd[1]);
+      barep_str_free(&child.pref);
+      _exit(1);
+    }
+
+    close(pipefd[1]);
+    barep_str_free(&child.pref);
+    _exit(status == 0 ? 0 : 1);
+  }
+
+  close(pipefd[1]);
+  close(output_fd);
+
+  worker->pid = pid;
+  worker->read_fd = pipefd[0];
+
+  return 0;
+}
+
+int barep_collect_worker(Barep_Worker *worker, Barep_State *s) {
+  Barep_Worker_Header header = {0};
+  int status = 0;
+  int wait_status = 0;
+
+  if (barep_read_full(worker->read_fd, &header, sizeof(header)) != 0) {
+    barep_error("can't read worker result\n");
+    status = 1;
+  }
+
+  close(worker->read_fd);
+
+  if (waitpid(worker->pid, &wait_status, 0) < 0) {
+    barep_error("can't wait for worker\n");
+    barep_perror();
+    status = 1;
+  } else if (!WIFEXITED(wait_status) || WEXITSTATUS(wait_status) != 0) {
+    status = 1;
+  }
+
+  if (header.status != 0) {
+    status = 1;
+  }
+
+  if (barep_copy_file(s->out == NULL ? stdout : s->out, worker->output_path) !=
+      0) {
+    status = 1;
+  }
+
+  s->count += (size_t)header.count;
+
+  if (unlink(worker->output_path) != 0) {
+    barep_error("can't remove worker output: %s\n", worker->output_path);
+    barep_perror();
+    status = 1;
+  }
+
+  return status;
+}
+
+int barep_process_paths_parallel(const Barep_Paths *paths, Barep_State *s) {
+  size_t worker_count = barep_min_size(s->params.jobs, paths->count);
+  Barep_Worker *workers =
+      (Barep_Worker *)calloc(worker_count, sizeof(workers[0]));
+  if (workers == NULL) {
+    barep_perror();
+    return 1;
+  }
+
+  size_t started = 0;
+  int status = 0;
+
+  for (size_t i = 0; i < worker_count; ++i) {
+    size_t begin = (paths->count * i) / worker_count;
+    size_t end = (paths->count * (i + 1)) / worker_count;
+
+    if (barep_spawn_worker(&workers[i], paths, begin, end, s) != 0) {
+      status = 1;
+      break;
+    }
+
+    ++started;
+  }
+
+  for (size_t i = 0; i < started; ++i) {
+    if (barep_collect_worker(&workers[i], s) != 0) {
+      status = 1;
+    }
+  }
+
+  for (size_t i = started; i < worker_count; ++i) {
+    if (workers[i].output_path[0] != '\0') {
+      unlink(workers[i].output_path);
+    }
+  }
+
+  free(workers);
+  return status;
+}
+
+int barep_process_input(const char *path, Barep_State *s) {
+  Barep_Paths paths = {0};
+  int status = barep_collect_input(path, &paths);
+
+  if (status == 0 && paths.count > 0) {
+    if (s->params.jobs > 1 && paths.count > 1) {
+      status = barep_process_paths_parallel(&paths, s);
+    } else {
+      status = barep_process_paths_serial(&paths, s);
+    }
+  }
+
+  barep_paths_free(&paths);
+  return status;
 }
 
 // help
@@ -455,6 +832,7 @@ void barep_help(void) {
   printf("-c\tDon't show occurrences, only count them\n");
   printf("-e\tAdd a pattern literally, even if it starts with '-'\n");
   printf("-f\tAdd an input file or directory\n");
+  printf("-j\tUse up to N worker processes (Linux/macOS)\n");
   printf("-n\tDon't display line numbers\n");
   printf("-q\tDon't show filenames\n");
   printf("\n");
@@ -493,12 +871,17 @@ int main(int argc, const char **argv) {
       .params = p,
       .count = 0,
       .pref = {0},
+      .out = stdout,
   };
+
+  int status = 0;
 
   for (size_t i = 0; i < p.input.count; i++) {
     size_t old = s.count;
 
-    barep_file_or_dir(p.input.items[i], &s);
+    if (barep_process_input(p.input.items[i], &s) != 0) {
+      status = 1;
+    }
 
     if (!p.only_count && s.count > old) {
       printf("%s", BAREP_FILE_DIVIDER);
@@ -510,8 +893,5 @@ int main(int argc, const char **argv) {
   barep_str_free(&s.pref);
   barep_params_free(p);
 
-  // Если в aho.h есть функция освобождения дерева, вызови её здесь:
-  // aho_free(t);
-
-  return 0;
+  return status;
 }
